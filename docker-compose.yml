@@ -47,6 +47,8 @@ services:
       - max_replication_slots=10
       - -c
       - max_wal_senders=10
+      - -c
+      - log_replication_commands=on
     ports:
       - "5432:5432"
     volumes:

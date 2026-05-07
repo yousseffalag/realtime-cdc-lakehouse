@@ -1,0 +1,291 @@
+version: "3.9"
+
+# =============================================================
+# CDC Lakehouse Platform — Docker Compose
+# Services: PostgreSQL · Zookeeper · Kafka · Debezium
+#           Spark Master/Worker · MinIO · Trino · Superset
+# =============================================================
+
+networks:
+  cdc-net:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  kafka-data:
+  zookeeper-data:
+  zookeeper-log:
+  minio-data:
+  trino-data:
+  superset-data:
+
+# ── Shared health-check defaults ─────────────────────────────
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 15s
+  timeout: 10s
+  retries: 5
+  start_period: 60s
+
+services:
+
+  # ══════════════════════════════════════════════════════════
+  # PostgreSQL — Transactional source database
+  # ══════════════════════════════════════════════════════════
+  postgres:
+    image: postgres:15-alpine
+    container_name: cdc-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-cdc_source}
+      POSTGRES_USER: ${POSTGRES_USER:-cdc_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cdc_pass}
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_replication_slots=10
+      - -c
+      - max_wal_senders=10
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./database/schema:/docker-entrypoint-initdb.d/schema:ro
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cdc_user} -d ${POSTGRES_DB:-cdc_source}"]
+    networks:
+      - cdc-net
+
+  # ══════════════════════════════════════════════════════════
+  # Zookeeper — Required by Kafka (classic mode)
+  # ══════════════════════════════════════════════════════════
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: cdc-zookeeper
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      ZOOKEEPER_SYNC_LIMIT: 2
+    ports:
+      - "2181:2181"
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-log:/var/lib/zookeeper/log
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | nc localhost 2181 || exit 1"]
+    networks:
+      - cdc-net
+
+  # ══════════════════════════════════════════════════════════
+  # Apache Kafka — Event streaming backbone
+  # ══════════════════════════════════════════════════════════
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: cdc-kafka
+    restart: unless-stopped
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_RETENTION_HOURS: 168          # 7 days
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_NUM_PARTITIONS: 3
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list"]
+    networks:
+      - cdc-net
+
+  # ══════════════════════════════════════════════════════════
+  # Debezium (Kafka Connect) — CDC engine
+  # ══════════════════════════════════════════════════════════
+  debezium:
+    image: debezium/connect:2.4
+    container_name: cdc-debezium
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: debezium-connect-group
+      CONFIG_STORAGE_TOPIC: debezium.configs
+      OFFSET_STORAGE_TOPIC: debezium.offsets
+      STATUS_STORAGE_TOPIC: debezium.status
+      CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      STATUS_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+    ports:
+      - "8083:8083"
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "curl -sf http://localhost:8083/connectors || exit 1"]
+    networks:
+      - cdc-net
+
+  # ══════════════════════════════════════════════════════════
+  # MinIO — S3-compatible object storage (lakehouse backend)
+  # ══════════════════════════════════════════════════════════
+  minio:
+    image: minio/minio:latest
+    container_name: cdc-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin123}
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Web Console
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live || exit 1"]
+    networks:
+      - cdc-net
+
+  # ══════════════════════════════════════════════════════════
+  # MinIO Init — Creates required buckets on startup
+  # ══════════════════════════════════════════════════════════
+  minio-init:
+    image: minio/mc:latest
+    container_name: cdc-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set local http://minio:9000 ${MINIO_ACCESS_KEY:-minioadmin} ${MINIO_SECRET_KEY:-minioadmin123};
+        mc mb --ignore-existing local/lakehouse-bronze;
+        mc mb --ignore-existing local/lakehouse-silver;
+        mc mb --ignore-existing local/lakehouse-gold;
+        echo 'MinIO buckets ready.';
+      "
+    networks:
+      - cdc-net
+
+  # ══════════════════════════════════════════════════════════
+  # Spark Master
+  # ══════════════════════════════════════════════════════════
+  spark-master:
+    image: apache/spark:3.5.0
+    container_name: cdc-spark-master
+    restart: unless-stopped
+    environment:
+      SPARK_MODE: master
+      SPARK_MASTER_HOST: spark-master
+      SPARK_RPC_AUTHENTICATION_ENABLED: "no"
+      SPARK_RPC_ENCRYPTION_ENABLED: "no"
+      SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED: "no"
+      SPARK_SSL_ENABLED: "no"
+    command: >
+      /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master 
+    ports:
+      - "8080:8080"   # Spark Web UI
+      - "7077:7077"   # Spark Master port
+    networks:
+      - cdc-net
+
+  # ══════════════════════════════════════════════════════════
+  # Spark Worker
+  # ══════════════════════════════════════════════════════════
+  spark-worker:
+    image: apache/spark:3.5.0
+    container_name: cdc-spark-worker
+    restart: unless-stopped
+    depends_on:
+      - spark-master
+    environment:
+      SPARK_MODE: worker
+      SPARK_MASTER_URL: spark://spark-master:7077
+      SPARK_WORKER_MEMORY: ${SPARK_EXECUTOR_MEMORY:-2G}
+      SPARK_WORKER_CORES: ${SPARK_EXECUTOR_CORES:-2}
+      SPARK_RPC_AUTHENTICATION_ENABLED: "no"
+      SPARK_RPC_ENCRYPTION_ENABLED: "no"
+      SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED: "no"
+      SPARK_SSL_ENABLED: "no"
+    command: >
+      /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    ports:
+      - "8081:8081"   # Worker Web UI
+    networks:
+      - cdc-net
+
+  # ══════════════════════════════════════════════════════════
+  # Trino — Distributed SQL query engine
+  # ══════════════════════════════════════════════════════════
+  trino:
+    image: trinodb/trino:435
+    container_name: cdc-trino
+    restart: unless-stopped
+    depends_on:
+      minio:
+        condition: service_healthy
+    ports:
+      - "8090:8080"   # Trino Web UI & API
+    volumes:
+      - ./trino/catalogs:/etc/trino/catalog:ro
+      - trino-data:/data/trino
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/v1/info || exit 1"]
+    networks:
+      - cdc-net
+
+  # ══════════════════════════════════════════════════════════
+  # Apache Superset — BI dashboard platform
+  # ══════════════════════════════════════════════════════════
+  superset:
+    image: apache/superset:3.1.0
+    container_name: cdc-superset
+    restart: unless-stopped
+    depends_on:
+      - trino
+    environment:
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-superset_secret_change_me}
+      ADMIN_USERNAME: ${SUPERSET_ADMIN_USER:-admin}
+      ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD:-admin}
+      ADMIN_EMAIL: ${SUPERSET_ADMIN_EMAIL:-admin@example.com}
+      ADMIN_FIRST_NAME: CDC
+      ADMIN_LAST_NAME: Admin
+    ports:
+      - "8088:8088"
+    volumes:
+      - superset-data:/app/superset_home
+    command: >
+      /bin/bash -c "
+        superset db upgrade &&
+        superset fab create-admin
+          --username $$ADMIN_USERNAME
+          --firstname $$ADMIN_FIRST_NAME
+          --lastname $$ADMIN_LAST_NAME
+          --email $$ADMIN_EMAIL
+          --password $$ADMIN_PASSWORD || true &&
+        superset init &&
+        superset run -h 0.0.0.0 -p 8088
+      "
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "curl -sf http://localhost:8088/health || exit 1"]
+    networks:
+      - cdc-net

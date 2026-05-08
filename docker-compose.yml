@@ -292,3 +292,22 @@ services:
       test: ["CMD-SHELL", "curl -sf http://localhost:8088/health || exit 1"]
     networks:
       - cdc-net
+
+  # ══════════════════════════════════════════════════════════
+  # Data Generator — Automated traffic simulation
+  # ══════════════════════════════════════════════════════════
+  data-generator:
+    build:
+      context: ./data-generator
+    container_name: cdc-data-generator
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: ${POSTGRES_DB:-cdc_source}
+      POSTGRES_USER: ${POSTGRES_USER:-cdc_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cdc_pass}
+    networks:
+      - cdc-net

@@ -53,7 +53,8 @@ services:
       - "5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./database/schema:/docker-entrypoint-initdb.d:ro
+      - ./database:/database:ro
+      - ./scripts/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh:ro
     healthcheck:
       <<: *healthcheck-defaults
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cdc_user} -d ${POSTGRES_DB:-cdc_source}"]

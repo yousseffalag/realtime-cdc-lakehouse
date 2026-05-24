@@ -1,95 +1,55 @@
-import random
-from config.settings import settings
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from typing import Optional
+import logging
 
-from generators.customer_gen import CustomerGenerator
-from generators.product_gen import ProductGenerator
-from generators.order_gen import OrderGenerator
-from generators.order_item_gen import OrderItemGenerator
-from generators.payment_gen import PaymentGenerator
-from generators.return_gen import ReturnGenerator
+app = FastAPI()
+logger = logging.getLogger(__name__)
+
+# Import your generator
+from main import DataGenerator
 
 
-class ActivityRouter:
+class GenerateRequest(BaseModel):
+    customers: int = 50
+    products: int = 100
+    orders: int = 200
 
-    def __init__(self):
-        # =====================================================
-        # GENERATORS
-        # =====================================================
-        self.customers = CustomerGenerator()
-        self.products = ProductGenerator()
-        self.orders = OrderGenerator()
-        self.order_items = OrderItemGenerator()
-        self.payments = PaymentGenerator()
-        self.returns = ReturnGenerator()
 
-        # probability helper (clean readability)
-        self.p = settings
+class IncrementalRequest(BaseModel):
+    new_customers: int = 10
+    new_orders_per_customer: int = 2
 
-    # =========================================================
-    # MAIN DECISION ENGINE
-    # =========================================================
 
-    def route(self):
-        r = random.random()
-        
-        # Cumulative probabilities for clean routing logic
-        p_customer = self.p.CUSTOMER_INSERT_PROB
-        p_product = p_customer + self.p.PRODUCT_INSERT_PROB
-        p_order = p_product + self.p.ORDER_INSERT_PROB
-        p_order_item = p_order + self.p.ORDER_ITEM_INSERT_PROB
-        p_order_update = p_order_item + self.p.ORDER_UPDATE_PROB
-        p_payment = p_order_update + self.p.PAYMENT_INSERT_PROB
-        p_return = p_payment + self.p.RETURN_INSERT_PROB
+@app.post("/generate")
+async def generate_data(request: GenerateRequest):
+    """Generate initial dataset"""
+    try:
+        generator = DataGenerator("postgresql://user:pass@localhost:5432/db")
+        results = generator.generate_all_data(
+            num_customers=request.customers,
+            num_products=request.products,
+            num_orders=request.orders
+        )
+        return {"status": "success", "results": results}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-        if r < p_customer:
-            return self._customer_insert()
-        elif r < p_product:
-            return self._product_insert()
-        elif r < p_order:
-            return self._order_insert()
-        elif r < p_order_item:
-            return self._order_item_insert()
-        elif r < p_order_update:
-            return self._order_update()
-        elif r < p_payment:
-            return self._payment_insert()
-        elif r < p_return:
-            return self._return_insert()
-        else:
-            return self._order_delete()
 
-    # =========================================================
-    # ACTION HANDLERS
-    # =========================================================
+@app.post("/generate/incremental")
+async def generate_incremental(request: IncrementalRequest):
+    """Generate incremental data"""
+    try:
+        generator = DataGenerator("postgresql://user:pass@localhost:5432/db")
+        results = generator.generate_incremental(
+            new_customers=request.new_customers,
+            new_orders_per_customer=request.new_orders_per_customer
+        )
+        return {"status": "success", "results": results}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-    def _customer_insert(self):
-        data = self.customers.insert()
-        return ("customers", "INSERT", data)
 
-    def _product_insert(self):
-        data = self.products.insert()
-        return ("products", "INSERT", data)
-
-    def _order_insert(self):
-        data = self.orders.insert()
-        return ("orders", "INSERT", data)
-
-    def _order_item_insert(self):
-        data = self.order_items.insert()
-        return ("order_items", "INSERT", data)
-
-    def _order_update(self):
-        data = self.orders.update()
-        return ("orders", "UPDATE", data)
-
-    def _payment_insert(self):
-        data = self.payments.insert()
-        return ("payments", "INSERT", data)
-
-    def _return_insert(self):
-        data = self.returns.insert()
-        return ("returns", "INSERT", data)
-
-    def _order_delete(self):
-        data = self.orders.delete()
-        return ("orders", "DELETE", data)
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy"}

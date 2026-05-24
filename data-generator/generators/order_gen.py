@@ -1,39 +1,42 @@
+from faker import Faker
+from typing import Dict, List
 import random
-from datetime import datetime
-from generators.state import State
+from datetime import timedelta
+import logging
 
-class OrderGenerator:
+fake = Faker()
+logger = logging.getLogger(__name__)
 
-    statuses = ["pending", "confirmed", "shipped", "delivered", "cancelled"]
-    channels = ["web", "mobile", "store"]
 
-    def insert(self):
-        customer = State.get_random("customers")
-        if not customer:
-            return None
-
-        order = {
-            "customer_id": customer.get("customer_id"),
-            "order_date": datetime.utcnow(),
-            "status": "pending",
-            "channel": random.choice(self.channels),
-            "updated_at": datetime.utcnow()
-        }
-
-        State.add("orders", order)
-        return order
-
-    def update(self):
-        order = State.get_random("orders")
-        if not order:
-            return None
-
-        order["status"] = random.choice(self.statuses)
-        order["updated_at"] = datetime.utcnow()
-        return order
-
-    def delete(self):
-        order = State.get_random("orders")
-        if order:
-            State.orders.remove(order)
-        return order
+def generate_orders(customers: List[Dict], count: int = 200) -> List[Dict]:
+    """Generate orders - let DB generate order_id"""
+    if not customers:
+        logger.warning("No customers available")
+        return []
+    
+    orders = []
+    statuses = ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled']
+    channels = ['web', 'mobile App', 'store', 'B2B']
+    
+    # Get actual customer_ids from inserted records
+    valid_customers = [c for c in customers if c.get('customer_id') is not None]
+    
+    if not valid_customers:
+        logger.error("No valid customers found!")
+        return []
+    
+    for _ in range(count):  # Don't track order_id
+        customer = random.choice(valid_customers)
+        order_date = fake.date_time_this_year()
+        
+        orders.append({
+            # NO order_id - let SERIAL generate it
+            'customer_id': customer['customer_id'],
+            'order_date': order_date,
+            'status': random.choice(statuses),
+            'channel': random.choice(channels),
+            'updated_at': order_date + timedelta(days=random.randint(1, 30))
+        })
+    
+    logger.info(f"Generated {len(orders)} orders")
+    return orders

@@ -155,7 +155,7 @@ services:
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin123}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-hshsh83skskk8lsk8320ljsks73}
     ports:
       - "9000:9000"   # S3 API
       - "9001:9001"   # Web Console
@@ -178,7 +178,7 @@ services:
         condition: service_healthy
     entrypoint: >
       /bin/sh -c "
-        mc alias set local http://minio:9000 ${MINIO_ACCESS_KEY:-minioadmin} ${MINIO_SECRET_KEY:-minioadmin123};
+        mc alias set local http://minio:9000 ${MINIO_ACCESS_KEY:-minioadmin} ${MINIO_SECRET_KEY:-};
         mc mb --ignore-existing local/lakehouse-bronze;
         mc mb --ignore-existing local/lakehouse-silver;
         mc mb --ignore-existing local/lakehouse-gold;
@@ -191,50 +191,72 @@ services:
   # Spark Master
   # ══════════════════════════════════════════════════════════
   spark-master:
-    image: apache/spark:3.5.0
+    build:
+      context: ./spark
     container_name: cdc-spark-master
-    restart: unless-stopped
+
+    volumes:
+      - ./spark:/spark
+      - ./spark-conf/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf
+
     environment:
-      SPARK_MODE: master
-      SPARK_MASTER_HOST: spark-master
-      SPARK_RPC_AUTHENTICATION_ENABLED: "no"
-      SPARK_RPC_ENCRYPTION_ENABLED: "no"
-      SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED: "no"
-      SPARK_SSL_ENABLED: "no"
-    command: >
-      /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master 
+      - SPARK_MODE=master
+
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master"]
+
     ports:
-      - "8080:8080"   # Spark Web UI
-      - "7077:7077"   # Spark Master port
+      - "8080:8080"
+      - "7077:7077"
+
     networks:
       - cdc-net
-
-  # ══════════════════════════════════════════════════════════
-  # Spark Worker
-  # ══════════════════════════════════════════════════════════
+  
   spark-worker:
-    image: apache/spark:3.5.0
+    build:
+      context: ./spark
     container_name: cdc-spark-worker
-    restart: unless-stopped
+
+    environment:
+      - SPARK_MODE=worker
+      - spark.worker.cores=2
+      - spark.worker.memory=4g
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=hshsh83skskk8lsk8320ljsks73
+
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker", "spark://spark-master:7077"]
+
+    ports:
+      - "8081:8081"
+
     depends_on:
       - spark-master
-    environment:
-      SPARK_MODE: worker
-      SPARK_MASTER_URL: spark://spark-master:7077
-      SPARK_WORKER_MEMORY: ${SPARK_EXECUTOR_MEMORY:-2G}
-      SPARK_WORKER_CORES: ${SPARK_EXECUTOR_CORES:-2}
-      SPARK_RPC_AUTHENTICATION_ENABLED: "no"
-      SPARK_RPC_ENCRYPTION_ENABLED: "no"
-      SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED: "no"
-      SPARK_SSL_ENABLED: "no"
-    command: >
-      /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
-    ports:
-      - "8081:8081"   # Worker Web UI
+
     networks:
       - cdc-net
 
-  # ══════════════════════════════════════════════════════════
+  spark-worker-2:
+    build:
+      context: ./spark
+    container_name: cdc-spark-worker-2
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_WORKER_MEMORY=3g
+      - SPARK_WORKER_CORES=2
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=hshsh83skskk8lsk8320ljsks73
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker", "spark://spark-master:7077"]
+    ports:
+      - "8082:8081"
+    depends_on:
+      - spark-master
+    networks:
+      - cdc-net    
+
+# ══════════════════════════════════════════════════════════
   # Trino — Distributed SQL query engine
   # ══════════════════════════════════════════════════════════
   trino:
@@ -254,6 +276,15 @@ services:
       test: ["CMD-SHELL", "curl -sf http://localhost:8080/v1/info || exit 1"]
     networks:
       - cdc-net
+
+  nessie:
+    image: projectnessie/nessie:0.71.0
+    container_name: cdc-nessie
+    restart: unless-stopped
+    ports:
+      - "19120:19120"
+    networks:
+      - cdc-net  
 
   # ══════════════════════════════════════════════════════════
   # Apache Superset — BI dashboard platform
@@ -275,24 +306,172 @@ services:
       - "8088:8088"
     volumes:
       - superset-data:/app/superset_home
-    command: >
-      /bin/bash -c "
-        superset db upgrade &&
-        superset fab create-admin
-          --username $$ADMIN_USERNAME
-          --firstname $$ADMIN_FIRST_NAME
-          --lastname $$ADMIN_LAST_NAME
-          --email $$ADMIN_EMAIL
-          --password $$ADMIN_PASSWORD || true &&
-        superset init &&
-        superset run -h 0.0.0.0 -p 8088
-      "
+    command: /bin/bash -c "pip install sqlalchemy-trino && superset db upgrade && superset fab create-admin --username $$ADMIN_USERNAME --firstname $$ADMIN_FIRST_NAME --lastname $$ADMIN_LAST_NAME --email $$ADMIN_EMAIL --password $$ADMIN_PASSWORD || true && superset init && superset run -h 0.0.0.0 -p 8088"
     healthcheck:
       <<: *healthcheck-defaults
       test: ["CMD-SHELL", "curl -sf http://localhost:8088/health || exit 1"]
     networks:
       - cdc-net
+  # ══════════════════════════════════════════════════════════
+  # Bronze Ingestion — Spark Structured Streaming
+  # Reads all 6 CDC topics from Kafka → writes to Bronze Iceberg
+  # ══════════════════════════════════════════════════════════
 
+  bronze-ingestion:
+      build:
+        context: ./spark
+        dockerfile: Dockerfile
+      container_name: cdc-bronze-ingestion
+      depends_on:
+        - spark-master
+        - spark-worker
+        - kafka
+        - minio
+        - nessie
+      environment:
+        - SPARK_MASTER_URL=spark://spark-master:7077
+        - AWS_ACCESS_KEY_ID=minioadmin
+        - AWS_SECRET_ACCESS_KEY=hshsh83skskk8lsk8320ljsks73
+        - AWS_REGION=us-east-1                          # <-- ajoute ça aussi
+      volumes:
+        - ./spark/jobs:/spark/jobs
+        - ./spark/config:/spark/config
+      networks:
+        - cdc-net
+      command: >
+        /opt/spark/bin/spark-submit
+          --master spark://spark-master:7077
+          --deploy-mode client
+          --conf spark.executor.memory=1g
+          --conf spark.driver.memory=1g
+          --conf spark.executor.cores=2
+          --conf spark.cores.max=2
+          --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
+          --conf spark.sql.catalog.iceberg=org.apache.iceberg.spark.SparkCatalog
+          --conf spark.sql.catalog.iceberg.catalog-impl=org.apache.iceberg.nessie.NessieCatalog
+          --conf spark.sql.catalog.iceberg.uri=http://nessie:19120/api/v1
+          --conf spark.sql.catalog.iceberg.ref=main
+          --conf spark.sql.catalog.iceberg.warehouse=s3a://lakehouse-bronze/warehouse
+          --conf spark.sql.catalog.iceberg.io-impl=org.apache.iceberg.aws.s3.S3FileIO
+          --conf spark.sql.catalog.iceberg.s3.endpoint=http://minio:9000
+          --conf spark.sql.catalog.iceberg.s3.access-key-id=minioadmin
+          --conf spark.sql.catalog.iceberg.s3.secret-access-key=hshsh83skskk8lsk8320ljsks73
+          --conf spark.sql.catalog.iceberg.s3.path-style-access=true
+          --conf spark.hadoop.fs.s3a.endpoint=http://minio:9000
+          --conf spark.hadoop.fs.s3a.access.key=minioadmin
+          --conf spark.hadoop.fs.s3a.secret.key=hshsh83skskk8lsk8320ljsks73
+          --conf spark.hadoop.fs.s3a.path.style.access=true
+          --conf spark.hadoop.fs.s3a.connection.ssl.enabled=false
+          --conf spark.driver.extraClassPath=/opt/spark/jars/*
+          --conf spark.executor.extraClassPath=/opt/spark/jars/*
+          --jars /opt/spark/jars/spark-sql-kafka-0-10_2.12-3.5.1.jar,/opt/spark/jars/kafka-clients-3.4.1.jar,/opt/spark/jars/spark-token-provider-kafka-0-10_2.12-3.5.1.jar,/opt/spark/jars/commons-pool2-2.11.1.jar,/opt/spark/jars/iceberg-spark-runtime-3.5_2.12-1.5.2.jar,/opt/spark/jars/hadoop-aws-3.3.4.jar,/opt/spark/jars/aws-java-sdk-bundle-1.12.262.jar,/opt/spark/jars/iceberg-nessie-1.5.2.jar,/opt/spark/jars/bundle-2.20.18.jar,/opt/spark/jars/url-connection-client-2.20.18.jar
+          /spark/jobs/bronze_ingestion.py
+
+
+  silver-processing:
+    build:
+      context: ./spark
+      dockerfile: Dockerfile
+    container_name: cdc-silver-processing
+    depends_on:
+      - spark-master
+      - spark-worker
+      - bronze-ingestion
+      - nessie
+      - minio
+    environment:
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=hshsh83skskk8lsk8320ljsks73
+      - AWS_REGION=us-east-1
+    volumes:
+      - ./spark/jobs:/spark/jobs
+      - ./spark/config:/spark/config
+    networks:
+      - cdc-net
+    command: >
+      /opt/spark/bin/spark-submit
+        --master spark://spark-master:7077
+        --deploy-mode client
+        --conf spark.executor.memory=1g
+        --conf spark.driver.memory=1g
+        --conf spark.executor.cores=2
+        --conf spark.cores.max=2
+        --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
+        --conf spark.sql.catalog.iceberg=org.apache.iceberg.spark.SparkCatalog
+        --conf spark.sql.catalog.iceberg.catalog-impl=org.apache.iceberg.nessie.NessieCatalog
+        --conf spark.sql.catalog.iceberg.uri=http://nessie:19120/api/v1
+        --conf spark.sql.catalog.iceberg.ref=main
+        --conf spark.sql.catalog.iceberg.warehouse=s3a://lakehouse-silver/warehouse
+        --conf spark.sql.catalog.iceberg.io-impl=org.apache.iceberg.aws.s3.S3FileIO
+        --conf spark.sql.catalog.iceberg.s3.endpoint=http://minio:9000
+        --conf spark.sql.catalog.iceberg.s3.access-key-id=minioadmin
+        --conf spark.sql.catalog.iceberg.s3.secret-access-key=hshsh83skskk8lsk8320ljsks73
+        --conf spark.sql.catalog.iceberg.s3.path-style-access=true
+        --conf spark.hadoop.fs.s3a.endpoint=http://minio:9000
+        --conf spark.hadoop.fs.s3a.access.key=minioadmin
+        --conf spark.hadoop.fs.s3a.secret.key=hshsh83skskk8lsk8320ljsks73
+        --conf spark.hadoop.fs.s3a.path.style.access=true
+        --conf spark.hadoop.fs.s3a.connection.ssl.enabled=false
+        --conf spark.driver.extraClassPath=/opt/spark/jars/*
+        --conf spark.executor.extraClassPath=/opt/spark/jars/*
+        --jars /opt/spark/jars/spark-sql-kafka-0-10_2.12-3.5.1.jar,/opt/spark/jars/kafka-clients-3.4.1.jar,/opt/spark/jars/spark-token-provider-kafka-0-10_2.12-3.5.1.jar,/opt/spark/jars/commons-pool2-2.11.1.jar,/opt/spark/jars/iceberg-spark-runtime-3.5_2.12-1.5.2.jar,/opt/spark/jars/hadoop-aws-3.3.4.jar,/opt/spark/jars/aws-java-sdk-bundle-1.12.262.jar,/opt/spark/jars/iceberg-nessie-1.5.2.jar,/opt/spark/jars/bundle-2.20.18.jar,/opt/spark/jars/url-connection-client-2.20.18.jar
+        /spark/jobs/silver_processing.py    
+  
+  
+  gold-processing:
+    build:
+      context: ./spark
+      dockerfile: Dockerfile
+    container_name: cdc-gold-processing
+    depends_on:
+      - spark-master
+      - spark-worker
+      - silver-processing
+      - nessie
+      - minio
+    environment:
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=hshsh83skskk8lsk8320ljsks73
+      - AWS_REGION=us-east-1
+    volumes:
+      - ./spark/jobs:/spark/jobs
+      - ./spark/config:/spark/config
+    networks:
+      - cdc-net
+    command: >
+      /opt/spark/bin/spark-submit
+        --master spark://spark-master:7077
+        --deploy-mode client
+        --conf spark.executor.memory=1g
+        --conf spark.driver.memory=1g
+        --conf spark.cores.max=2
+        --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
+        --conf spark.sql.catalog.iceberg=org.apache.iceberg.spark.SparkCatalog
+        --conf spark.sql.catalog.iceberg.catalog-impl=org.apache.iceberg.nessie.NessieCatalog
+        --conf spark.sql.catalog.iceberg.uri=http://nessie:19120/api/v1
+        --conf spark.sql.catalog.iceberg.ref=main
+        --conf spark.sql.catalog.iceberg.warehouse=s3a://lakehouse-gold/warehouse
+        --conf spark.sql.catalog.iceberg.io-impl=org.apache.iceberg.aws.s3.S3FileIO
+        --conf spark.sql.catalog.iceberg.s3.endpoint=http://minio:9000
+        --conf spark.sql.catalog.iceberg.s3.access-key-id=minioadmin
+        --conf spark.sql.catalog.iceberg.s3.secret-access-key=hshsh83skskk8lsk8320ljsks73
+        --conf spark.sql.catalog.iceberg.s3.path-style-access=true
+        --conf spark.hadoop.fs.s3a.endpoint=http://minio:9000
+        --conf spark.hadoop.fs.s3a.access.key=minioadmin
+        --conf spark.hadoop.fs.s3a.secret.key=hshsh83skskk8lsk8320ljsks73
+        --conf spark.hadoop.fs.s3a.path.style.access=true
+        --conf spark.hadoop.fs.s3a.connection.ssl.enabled=false
+        --conf spark.executorEnv.AWS_REGION=us-east-1
+        --conf spark.executorEnv.AWS_ACCESS_KEY_ID=minioadmin
+        --conf spark.executorEnv.AWS_SECRET_ACCESS_KEY=hshsh83skskk8lsk8320ljsks73
+        --conf spark.driver.extraClassPath=/opt/spark/jars/*
+        --conf spark.executor.extraClassPath=/opt/spark/jars/*
+        --jars /opt/spark/jars/spark-sql-kafka-0-10_2.12-3.5.1.jar,/opt/spark/jars/kafka-clients-3.4.1.jar,/opt/spark/jars/spark-token-provider-kafka-0-10_2.12-3.5.1.jar,/opt/spark/jars/commons-pool2-2.11.1.jar,/opt/spark/jars/iceberg-spark-runtime-3.5_2.12-1.5.2.jar,/opt/spark/jars/hadoop-aws-3.3.4.jar,/opt/spark/jars/aws-java-sdk-bundle-1.12.262.jar,/opt/spark/jars/iceberg-nessie-1.5.2.jar,/opt/spark/jars/bundle-2.20.18.jar,/opt/spark/jars/url-connection-client-2.20.18.jar
+        /spark/jobs/gold_processing.py
+  
+  
   # ══════════════════════════════════════════════════════════
   # Data Generator — Automated traffic simulation
   # ══════════════════════════════════════════════════════════
@@ -305,6 +484,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
+      DATABASE_URL: postgresql+psycopg2://$POSTGRES_USER:$POSTGRES_PASSWORD@postgres:5432/$POSTGRES_DB
       POSTGRES_HOST: postgres
       POSTGRES_DB: ${POSTGRES_DB:-cdc_source}
       POSTGRES_USER: ${POSTGRES_USER:-cdc_user}

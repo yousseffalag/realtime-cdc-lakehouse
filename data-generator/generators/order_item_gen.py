@@ -1,35 +1,38 @@
+from typing import Dict, List
 import random
-from generators.state import State
+import logging
 
-class OrderItemGenerator:
+logger = logging.getLogger(__name__)
 
-    def insert(self):
-        order = State.get_random("orders")
-        product = State.get_random("products")
 
-        if not order or not product:
-            return None
-
-        data = {
-            "order_id": order.get("order_id"), # Will be None if DB ID not yet assigned
-            "product_id": product.get("product_id"),
-            "quantity": random.randint(1, 5),
-            "unit_price": product["unit_price"]
-        }
-
-        State.add("order_items", data)
-        return data
-
-    def update(self):
-        item = State.get_random("order_items")
-        if not item:
-            return None
-
-        item["quantity"] = random.randint(1, 10)
-        return item
-
-    def delete(self):
-        item = State.get_random("order_items")
-        if item:
-            State.order_items.remove(item)
-        return item
+def generate_order_items(orders: List[Dict], products: List[Dict]) -> List[Dict]:
+    """Generate order items - let DB generate order_item_id"""
+    if not orders or not products:
+        return []
+    
+    order_items = []
+    
+    valid_orders = [o for o in orders if o.get('order_id') is not None]
+    valid_products = [p for p in products if p.get('product_id') is not None]
+    
+    if not valid_orders or not valid_products:
+        return []
+    
+    for order in valid_orders:
+        num_items = random.randint(1, 5)
+        
+        for _ in range(num_items):
+            product = random.choice(valid_products)
+            quantity = random.randint(1, 10)
+            
+            order_items.append({
+                # NO order_item_id - let SERIAL generate it
+                'order_id': order['order_id'],
+                'product_id': product['product_id'],
+                'quantity': quantity,
+                'unit_price': product.get('unit_price', 0)
+                # total_amount is GENERATED ALWAYS - don't include
+            })
+    
+    logger.info(f"Generated {len(order_items)} order items")
+    return order_items

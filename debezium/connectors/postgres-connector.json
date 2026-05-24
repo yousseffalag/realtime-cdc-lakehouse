@@ -1,22 +1,23 @@
 {
-    "name": "postgres-cdc",
-    "config": {
-        "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
-        "database.hostname": "postgres",
-        "database.port": "5432",
-        "database.user": "debezium",
-        "database.password": "dbz",
-        "database.dbname": "cdc_db",
-        "topic.prefix": "cdc",
-        "plugin.name": "pgoutput",
-        "slot.name": "cdc_slot",
-        "publication.name": "dbz_publication",
-        "publication.autocreate.mode": "disabled",
-        "table.include.list": "public.customers,public.products,public.orders,public.order_items,public.payments,public.returns",
-        "snapshot.mode": "initial",
-        "key.converter": "org.apache.kafka.connect.json.JsonConverter",
-        "key.converter.schemas.enable": "false",
-        "value.converter": "org.apache.kafka.connect.json.JsonConverter",
-        "value.converter.schemas.enable": "false"
-    }
+  "name": "postgres-cdc-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "tasks.max": "1",
+    "plugin.name": "pgoutput",
+    "topic.prefix": "postgres",
+    "database.hostname": "postgres",
+    "database.port": "5432",
+    "database.user": "cdc_user",
+    "database.password": "1234",
+    "database.dbname": "cdc_db",
+    "slot.name": "debezium_slot",
+    "publication.name": "dbz_publication",
+    "publication.autocreate.mode": "all_tables",
+    "table.include.list": "public.customers,public.products,public.orders,public.order_items,public.payments,public.returns",
+    "snapshot.mode": "initial",
+    "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "key.converter.schemas.enable": "false",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": "false"
+  }
 }

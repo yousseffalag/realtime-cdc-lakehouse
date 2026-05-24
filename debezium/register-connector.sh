@@ -1,4 +1,4 @@
 #!/bin/bash
-curl -X POST http://localhost:8083/connectors \
-  -H "Content-Type: application/json" \
+curl -i -X POST -H "Content-Type: application/json" \
+  http://localhost:8083/connectors/ \
   -d @connectors/postgres-connector.json

@@ -1,35 +1,35 @@
+from typing import Dict, List
 import random
-from datetime import datetime
-from generators.state import State
+from datetime import timedelta
+import logging
 
-class ReturnGenerator:
+logger = logging.getLogger(__name__)
 
-    reasons = ["damaged", "wrong_item", "not_satisfied", "late_delivery"]
-    statuses = ["requested", "approved", "rejected", "completed"]
 
-    def insert(self):
-        order = State.get_random("orders")
-        if not order:
-            return None
-
-        data = {
-            "order_id": order.get("order_id"),
-            "return_date": datetime.utcnow(),
-            "reason": random.choice(self.reasons),
-            "status": "requested"
-        }
-
-        State.add("returns", data)
-        return data
-
-    def update(self):
-        ret = State.get_random("returns")
-        if ret:
-            ret["status"] = random.choice(self.statuses)
-        return ret
-
-    def delete(self):
-        ret = State.get_random("returns")
-        if ret:
-            State.returns.remove(ret)
-        return ret
+def generate_returns(orders: List[Dict]) -> List[Dict]:
+    """Generate returns - NO ID (let DB auto-generate)"""
+    if not orders:
+        return []
+    
+    returns = []
+    reasons = ['defective', 'customer regret', 'wrong item', 'damaged']
+    statuses = ['requested', 'approved', 'rejected', 'completed']
+    
+    # About 10% of orders have returns
+    eligible_orders = [o for o in orders if o.get('status') in ['delivered', 'completed']]
+    
+    if eligible_orders:
+        num_returns = min(len(eligible_orders) // 10, len(eligible_orders))
+        return_orders = random.sample(eligible_orders, num_returns) if num_returns > 0 else []
+        
+        for order in return_orders:
+            returns.append({
+                # NO return_id - let SERIAL generate it
+                'order_id': order['order_id'],
+                'return_date': order['order_date'] + timedelta(days=random.randint(1, 15)),
+                'reason': random.choice(reasons),
+                'status': random.choice(statuses)
+            })
+    
+    logger.info(f"Generated {len(returns)} returns")
+    return returns

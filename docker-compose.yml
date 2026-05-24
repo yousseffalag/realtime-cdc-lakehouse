@@ -18,6 +18,7 @@ volumes:
   minio-data:
   trino-data:
   superset-data:
+  airflow-db-data:
 
 # ── Shared health-check defaults ─────────────────────────────
 x-healthcheck-defaults: &healthcheck-defaults
@@ -193,6 +194,7 @@ services:
   spark-master:
     build:
       context: ./spark
+    image: cdc-lakehouse-spark:latest  
     container_name: cdc-spark-master
 
     volumes:
@@ -418,7 +420,6 @@ services:
         --jars /opt/spark/jars/spark-sql-kafka-0-10_2.12-3.5.1.jar,/opt/spark/jars/kafka-clients-3.4.1.jar,/opt/spark/jars/spark-token-provider-kafka-0-10_2.12-3.5.1.jar,/opt/spark/jars/commons-pool2-2.11.1.jar,/opt/spark/jars/iceberg-spark-runtime-3.5_2.12-1.5.2.jar,/opt/spark/jars/hadoop-aws-3.3.4.jar,/opt/spark/jars/aws-java-sdk-bundle-1.12.262.jar,/opt/spark/jars/iceberg-nessie-1.5.2.jar,/opt/spark/jars/bundle-2.20.18.jar,/opt/spark/jars/url-connection-client-2.20.18.jar
         /spark/jobs/silver_processing.py    
   
-  
   gold-processing:
     build:
       context: ./spark
@@ -438,40 +439,14 @@ services:
     volumes:
       - ./spark/jobs:/spark/jobs
       - ./spark/config:/spark/config
+      - ./spark/entrypoint-gold.sh:/entrypoint-gold.sh  # ← AJOUTER CETTE LIGNE
     networks:
       - cdc-net
-    command: >
-      /opt/spark/bin/spark-submit
-        --master spark://spark-master:7077
-        --deploy-mode client
-        --conf spark.executor.memory=1g
-        --conf spark.driver.memory=1g
-        --conf spark.cores.max=2
-        --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
-        --conf spark.sql.catalog.iceberg=org.apache.iceberg.spark.SparkCatalog
-        --conf spark.sql.catalog.iceberg.catalog-impl=org.apache.iceberg.nessie.NessieCatalog
-        --conf spark.sql.catalog.iceberg.uri=http://nessie:19120/api/v1
-        --conf spark.sql.catalog.iceberg.ref=main
-        --conf spark.sql.catalog.iceberg.warehouse=s3a://lakehouse-gold/warehouse
-        --conf spark.sql.catalog.iceberg.io-impl=org.apache.iceberg.aws.s3.S3FileIO
-        --conf spark.sql.catalog.iceberg.s3.endpoint=http://minio:9000
-        --conf spark.sql.catalog.iceberg.s3.access-key-id=minioadmin
-        --conf spark.sql.catalog.iceberg.s3.secret-access-key=hshsh83skskk8lsk8320ljsks73
-        --conf spark.sql.catalog.iceberg.s3.path-style-access=true
-        --conf spark.hadoop.fs.s3a.endpoint=http://minio:9000
-        --conf spark.hadoop.fs.s3a.access.key=minioadmin
-        --conf spark.hadoop.fs.s3a.secret.key=hshsh83skskk8lsk8320ljsks73
-        --conf spark.hadoop.fs.s3a.path.style.access=true
-        --conf spark.hadoop.fs.s3a.connection.ssl.enabled=false
-        --conf spark.executorEnv.AWS_REGION=us-east-1
-        --conf spark.executorEnv.AWS_ACCESS_KEY_ID=minioadmin
-        --conf spark.executorEnv.AWS_SECRET_ACCESS_KEY=hshsh83skskk8lsk8320ljsks73
-        --conf spark.driver.extraClassPath=/opt/spark/jars/*
-        --conf spark.executor.extraClassPath=/opt/spark/jars/*
-        --jars /opt/spark/jars/spark-sql-kafka-0-10_2.12-3.5.1.jar,/opt/spark/jars/kafka-clients-3.4.1.jar,/opt/spark/jars/spark-token-provider-kafka-0-10_2.12-3.5.1.jar,/opt/spark/jars/commons-pool2-2.11.1.jar,/opt/spark/jars/iceberg-spark-runtime-3.5_2.12-1.5.2.jar,/opt/spark/jars/hadoop-aws-3.3.4.jar,/opt/spark/jars/aws-java-sdk-bundle-1.12.262.jar,/opt/spark/jars/iceberg-nessie-1.5.2.jar,/opt/spark/jars/bundle-2.20.18.jar,/opt/spark/jars/url-connection-client-2.20.18.jar
-        /spark/jobs/gold_processing.py
-  
-  
+    command: ["/bin/bash", "/entrypoint-gold.sh"]  # ← MODIFIER ICI
+    # Supprimez ou commentez l'ancienne commande
+
+
+
   # ══════════════════════════════════════════════════════════
   # Data Generator — Automated traffic simulation
   # ══════════════════════════════════════════════════════════
@@ -491,3 +466,99 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cdc_pass}
     networks:
       - cdc-net
+  # ══════════════════════════════════════════════════════════
+  # Apache Airflow — Orchestrateur de pipelines
+  # ══════════════════════════════════════════════════════════
+  airflow-db:
+    image: postgres:15-alpine
+    container_name: cdc-airflow-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: airflow
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow_pass
+    volumes:
+      - airflow-db-data:/var/lib/postgresql/data
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow"]
+    networks:
+      - cdc-net
+
+  airflow-init:
+    image: apache/airflow:2.9.1
+    container_name: cdc-airflow-init
+    depends_on:
+      airflow-db:
+        condition: service_healthy
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow_pass@airflow-db:5432/airflow
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:-46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLt0nQ8G00=}
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-airflow_secret_change_me}
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate &&
+        airflow users create \
+          --username ${AIRFLOW_ADMIN_USER:-admin} \
+          --password ${AIRFLOW_ADMIN_PASSWORD:-admin} \
+          --firstname CDC \
+          --lastname Admin \
+          --role Admin \
+          --email admin@example.com || true
+    networks:
+      - cdc-net
+
+  airflow-webserver:
+    image: apache/airflow:2.9.1
+    container_name: cdc-airflow-webserver
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow_pass@airflow-db:5432/airflow
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:-46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLt0nQ8G00=}
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-airflow_secret_change_me}
+      # Connexions aux services CDC
+      AIRFLOW_CONN_SPARK_DEFAULT: spark://spark-master:7077
+      AIRFLOW_CONN_POSTGRES_CDC: postgresql+psycopg2://${POSTGRES_USER:-cdc_user}:${POSTGRES_PASSWORD:-cdc_pass}@postgres:5432/${POSTGRES_DB:-cdc_source}
+    ports:
+      - "8089:8080"   # Airflow Web UI
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+      - ./spark/jobs:/opt/airflow/spark_jobs:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: webserver
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+    networks:
+      - cdc-net
+
+  airflow-scheduler:
+    image: apache/airflow:2.9.1
+    container_name: cdc-airflow-scheduler
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow_pass@airflow-db:5432/airflow
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:-46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLt0nQ8G00=}
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-airflow_secret_change_me}
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+      - ./spark/jobs:/opt/airflow/spark_jobs:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: scheduler
+    networks:
+      - cdc-net    

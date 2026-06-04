@@ -542,8 +542,7 @@ AIRFLOW_FERNET_KEY=46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLt0nQ8G00=
 AIRFLOW_SECRET_KEY=airflow_secret_change_me
 AIRFLOW_ADMIN_USER=admin
 AIRFLOW_ADMIN_PASSWORD=admin
-
-
+```
  
 ## 📡 Monitoring
  

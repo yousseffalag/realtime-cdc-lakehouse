@@ -596,7 +596,7 @@ This project is open-source and available under the [MIT License](LICENSE).
 ---
  
 <div align="center">
-  <strong>Built by <a href="https://github.com/yousseffalag">Youssef Falag</a></strong><br/>
+  <strong>Built by <a href="https://github.com/yousseffalag">Youssef Falag</a> & <a href="https://github.com/AyoubSamy"> Ayoub Samy</a></strong><br/>
   <em>II-BDCC · Module Big Data · CDC Lakehouse Project</em><br/><br/>
   <sub>
     Apache Kafka · Apache Spark · Apache Iceberg · Apache Airflow · Apache Trino · Apache Superset · MinIO · Debezium · Project Nessie · PostgreSQL · Docker
